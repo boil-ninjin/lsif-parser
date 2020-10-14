@@ -26,10 +26,8 @@ pub enum SyntaxKind {
     COLON,
     #[regex(r#"""#, lex_string)]
     STRING,
-    #[regex(r"[+-]?[0-9_]+", priority = 3)]
+    #[regex(r"[+-]?[0-9_]+", priority = 2)]
     INTEGER,
-    #[regex(r"[-+]?([0-9_]+(\.[0-9_]+)?([eE][+-]?[0-9_]+)?|nan|inf)", priority = 2)]
-    FLOAT,
     #[regex(r"true|false")]
     BOOL,
 

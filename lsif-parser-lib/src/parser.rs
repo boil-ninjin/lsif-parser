@@ -196,10 +196,10 @@ impl<'p> Parser<'p> {
                 self.builder.token(kind.into(), self.lexer.slice().into());
             }
         }
-
         self.step();
         Ok(())
     }
+
     fn step(&mut self) {
         self.current_token = None;
         while let Some(token) = self.lexer.next() {
@@ -249,6 +249,7 @@ impl<'p> Parser<'p> {
         }
     }
 
+    // get next token
     fn get_token(&mut self) -> ParserResult<SyntaxKind> {
         if self.current_token.is_none() {
             self.step();
@@ -262,118 +263,77 @@ impl<'p> Parser<'p> {
         // We want to make sure that an entry spans the
         // entire line, so we start/close its node manually.
         // let mut entry_started = false;
-
         while let Ok(token) = self.get_token() {
             match token {
                 NEWLINE => {
                     // dispose newline token
-                    let _ = self.token();
+                    let _ = self.token()?;
+                    continue;
                 }
                 _ => {
-                    let _ = whitelisted!(self, NEWLINE, !with_node!(self.builder, SENTENCE, self.parse_sentence()));
+                    // not wrap by whitelisted because newline in sentence is not allowed
+                    let _ = with_node!(self.builder, SENTENCE, self.parse_sentence());
                 }
             }
         }
-        if entry_started {
-            self.builder.finish_node();
-        }
+        self.builder.finish_node();
         Ok(())
     }
+    // parse sentence but need to count brace and comma to find invalid one.
     fn parse_sentence(&mut self) -> ParserResult<()> {
         self.must_token_or(BRACE_START, r#"expected sentence starts with "{""#)?;
         // count if sentence is finished with brace or not.
-        let mut brace_count= 1;
-        while brace_count >= 0 {
-            let t = match self.get_token() {
-                Ok(token) => token,
-                Err(_) => {
-                    if brace_count == 0{
-                        return Ok(());
-                    }
-                    return self.error("unexpected end of input");
-                }
-            };
+        let mut first = true;
+        let mut comma_last = false;
+
+        loop {
+            let t = self.get_token()?;
             match t {
-                BRACE_END =>{
-                    if !finish_sentence {
-                        self.token()?;
-                        finish_sentence = true;
+                BRACE_END => {
+                    if first || comma_last {
+                        // it is still reported as a syntax error,
+                        // but we can still analyze it as if it was a valid
+                        // table.
+                        let _ = self.report_error("expected value, trailing comma is not allowed");
+                        let _ = self.report_error("avoid sentence to be empty");
                     } else {
-                        return self.error(r#"unexpected "}""#);
+                        comma_last = false;
+                        break self.token()?;
                     }
                 }
                 COMMA => {
-                    if after_period {
-                        return self.error(r#"unexpected ".""#);
+                    if first || comma_last {
+                        let _ = self.error(r#"unexpected ",""#);
                     } else {
                         self.token()?;
-                        after_period = true;
+                        comma_last = true;
                     }
                 }
                 _ => {
-                    if after_period {
-                        match self.parse_ident() {
-                            Ok(_) => {}
-                            Err(_) => return self.error("expected identifier"),
-                        }
-                        after_period = false;
+                    if !comma_last && !first {
+                        return self.error(r#"unexpected entry after another one"#);
                     } else {
-                        break;
+                        match self.parse_entry() {
+                            Ok(_) => {}
+                            Err(_) => return self.error("expected entry"),
+                        }
+                        comma_last = true;
                     }
                 }
             };
+            first = false;
         }
 
         Ok(())
     }
-}
 
-impl Parse {
-    fn syntax(&self) -> SyntaxNode {
-        SyntaxNode::new_root(self.green_node.clone())
-    }
-    pub fn root(&self) -> Root {
-        Root::cast(self.syntax()).unwrap()
-    }
-}
+    fn parse_entry(&mut self) -> ParserResult<()> {
+        with_node!(self.builder, KEY, self.parse_key())?;
+        self.must_token_or(COLON, r#"expected ":""#)?;
+        with_node!(self.builder, VALUE, self.parse_value())?;
 
-/// Split the input string into a flat list of tokens
-/// (such as L_PAREN, WORD, and WHITESPACE)
-fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
-    fn tok(t: SyntaxKind) -> m_lexer::TokenKind {
-        m_lexer::TokenKind(rowan::SyntaxKind::from(t).0)
+        Ok(())
     }
-    fn kind(t: m_lexer::TokenKind) -> SyntaxKind {
-        match t.0 {
-            0 => L_PAREN,
-            1 => R_PAREN,
-            2 => WORD,
-            3 => WHITESPACE,
-            4 => ERROR,
-            _ => unreachable!(),
-        }
-    }
-
-    let lexer = m_lexer::LexerBuilder::new()
-        .error_token(tok(ERROR))
-        .tokens(&[
-            (tok(L_PAREN), r"\("),
-            (tok(R_PAREN), r"\)"),
-            (tok(WORD), r"[^\s()]+"),
-            (tok(WHITESPACE), r"\s+"),
-        ])
-        .build();
-
-    lexer
-        .tokenize(text)
-        .into_iter()
-        .map(|t| (t.len, kind(t.kind)))
-        .scan(0usize, |start_offset, (len, kind)| {
-            let s: SmolStr = text[*start_offset..*start_offset + len].into();
-            *start_offset += len;
-            Some((kind, s))
-        })
-        .collect()
 }
 
 /// The parse results are stored as a "green tree".
@@ -383,22 +343,20 @@ fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
 /// the errors that occurred during parsing.
 #[derive(Debug, Clone)]
 pub struct Parse {
-    green_node: GreenNode,
-    #[allow(unused)]
-    errors: Vec<Error>,
+    pub green_node: GreenNode,
+    pub errors: Vec<Error>,
 }
 
 impl Parse {
-    /// Turn the parse into a syntax node.
-    pub fn into_syntax(self) -> SyntaxNode {
-        SyntaxNode::new_root(self.green_node)
-    }
-
     /// Turn the parse into a DOM tree.
     ///
     /// Any semantic errors that occur will be collected
     /// in the returned DOM node.
-    pub fn into_dom(self) -> dom::RootNode {
-        dom::RootNode::cast(rowan::NodeOrToken::Node(self.into_syntax())).unwrap()
+    // pub fn into_dom(self) -> dom::RootNode {
+    //     dom::RootNode::cast(rowan::NodeOrToken::Node(self.into_syntax())).unwrap()
+    // }
+    /// Turn the parse into a syntax node.
+    pub fn into_syntax(self) -> SyntaxNode {
+        SyntaxNode::new_root(self.green_node)
     }
 }
