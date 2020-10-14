@@ -1,10 +1,3 @@
-//! In this tutorial, we will write parser
-//! and evaluator of arithmetic S-expressions,
-//! which look like this:
-//! ```
-//! (+ (* 15 2) 62)
-//! ```
-//!
 //! It's suggested to read the conceptual overview of the design
 //! alongside this tutorial:
 //! https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/syntax.md
@@ -14,364 +7,331 @@
 /// tokens.
 /// Additionally, rowan uses `TextSize` and `TextRange` types to
 /// represent utf8 offsets and ranges.
-use rowan::SmolStr;
+use crate::{
+    dom,
+    syntax::{SyntaxKind, SyntaxKind::*, SyntaxNode},
+    util::{allowed_chars, check_escape},
+};
+// use dom::Cast;
+use logos::{Lexer, Logos};
+use rowan::{GreenNode, GreenNodeBuilder, SmolStr, TextRange, TextSize};
+use std::convert::TryInto;
 
-/// Let's start with defining all kinds of tokens and
-/// composite nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(non_camel_case_types)]
-#[repr(u16)]
-pub enum SyntaxKind {
-    L_PAREN = 0, // '('
-    R_PAREN,     // ')'
-    WORD,        // '+', '15'
-    WHITESPACE,  // whitespaces is explicit
-    ERROR,       // as well as errors
+#[macro_use]
+mod macros;
 
-    // composite nodes
-    LIST, // `(+ 2 3)`
-    ATOM, // `+`, `15`, wraps a WORD token
-    ROOT, // top-level node: a list of s-expressions
+/// A syntax error that can occur during parsing.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct Error {
+    /// The span of the error.
+    pub range: TextRange,
+
+    /// Human-friendly error message.
+    pub message: String,
 }
-use SyntaxKind::*;
 
-/// Some boilerplate is needed, as rowan settled on using its own
-/// `struct SyntaxKind(u16)` internally, instead of accepting the
-/// user's `enum SyntaxKind` as a type parameter.
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?})", &self.message, &self.range)
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// Parse a LSIF document into a [Rowan green tree](rowan::GreenNode).
 ///
-/// First, to easily pass the enum variants into rowan via `.into()`:
-impl From<SyntaxKind> for rowan::SyntaxKind {
-    fn from(kind: SyntaxKind) -> Self {
-        Self(kind as u16)
-    }
-}
-
-/// Second, implementing the `Language` trait teaches rowan to convert between
-/// these two SyntaxKind types, allowing for a nicer SyntaxNode API where
-/// "kinds" are values from our `enum SyntaxKind`, instead of plain u16 values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Lang {}
-impl rowan::Language for Lang {
-    type Kind = SyntaxKind;
-    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        assert!(raw.0 <= ROOT as u16);
-        unsafe { std::mem::transmute::<u16, SyntaxKind>(raw.0) }
-    }
-    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
-        kind.into()
-    }
-}
-
-/// GreenNode is an immutable tree, which is cheap to change,
-/// but doesn't contain offsets and parent pointers.
-use rowan::GreenNode;
-
-/// You can construct GreenNodes by hand, but a builder
-/// is helpful for top-down parsers: it maintains a stack
-/// of currently in-progress nodes
-use rowan::GreenNodeBuilder;
-
-/// The parse results are stored as a "green tree".
-/// We'll discuss working with the results later
-pub struct Parse {
-    green_node: GreenNode,
-    #[allow(unused)]
-    errors: Vec<String>,
-}
-
-/// Now, let's write a parser.
+/// The parsing will not stop at unexpected or invalid tokens.
+/// Instead errors will be collected with their character offsets and lengths,
+/// and the invalid token(s) will have the `ERROR` kind in the final tree.
+///
+/// The parser will also validate comment and string contents, looking for
+/// invalid escape sequences and invalid characters.
+/// These will also be reported as syntax errors.
+///
+/// This does not check for semantic errors such as duplicate keys.
 /// Note that `parse` does not return a `Result`:
 /// by design, syntax tree can be built even for
 /// completely invalid source code.
 pub fn parse(text: &str) -> Parse {
-    struct Parser {
-        /// input tokens, including whitespace,
-        /// in *reverse* order.
-        tokens: Vec<(SyntaxKind, SmolStr)>,
-        /// the in-progress tree.
-        builder: GreenNodeBuilder<'static>,
-        /// the list of syntax errors we've accumulated
-        /// so far.
-        errors: Vec<String>,
-    }
-
-    /// The outcome of parsing a single S-expression
-    pub enum SexpRes {
-        /// An S-expression (i.e. an atom, or a list) was successfully parsed
-        Ok,
-        /// Nothing was parsed, as no significant tokens remained
-        Eof,
-        /// An unexpected ')' was found
-        RParen,
-    }
-
-    impl Parser {
-        fn parse(mut self) -> Parse {
-            // Make sure that the root node covers all source
-            self.builder.start_node(ROOT.into());
-            // Parse zero or more S-expressions
-            loop {
-                match self.sexp() {
-                    SexpRes::Eof => break,
-                    SexpRes::RParen => {
-                        self.builder.start_node(ERROR.into());
-                        self.errors.push("unmatched `)`".to_string());
-                        self.bump(); // be sure to chug along in case of error
-                        self.builder.finish_node();
-                    }
-                    SexpRes::Ok => (),
-                }
-            }
-            // Don't forget to eat *trailing* whitespace
-            self.skip_ws();
-            // Close the root node.
-            self.builder.finish_node();
-
-            // Turn the builder into a GreenNode
-            Parse { green_node: self.builder.finish(), errors: self.errors }
-        }
-        fn list(&mut self) {
-            assert_eq!(self.current(), Some(L_PAREN));
-            // Start the list node
-            self.builder.start_node(LIST.into());
-            self.bump(); // '('
-            loop {
-                match self.sexp() {
-                    SexpRes::Eof => {
-                        self.errors.push("expected `)`".to_string());
-                        break;
-                    }
-                    SexpRes::RParen => {
-                        self.bump();
-                        break;
-                    }
-                    SexpRes::Ok => (),
-                }
-            }
-            // close the list node
-            self.builder.finish_node();
-        }
-        fn sexp(&mut self) -> SexpRes {
-            // Eat leading whitespace
-            self.skip_ws();
-            // Either a list, an atom, a closing paren,
-            // or an eof.
-            let t = match self.current() {
-                None => return SexpRes::Eof,
-                Some(R_PAREN) => return SexpRes::RParen,
-                Some(t) => t,
-            };
-            match t {
-                L_PAREN => self.list(),
-                WORD => {
-                    self.builder.start_node(ATOM.into());
-                    self.bump();
-                    self.builder.finish_node();
-                }
-                ERROR => self.bump(),
-                _ => unreachable!(),
-            }
-            SexpRes::Ok
-        }
-        /// Advance one token, adding it to the current branch of the tree builder.
-        fn bump(&mut self) {
-            let (kind, text) = self.tokens.pop().unwrap();
-            self.builder.token(kind.into(), text);
-        }
-        /// Peek at the first unprocessed token
-        fn current(&self) -> Option<SyntaxKind> {
-            self.tokens.last().map(|(kind, _)| *kind)
-        }
-        fn skip_ws(&mut self) {
-            while self.current() == Some(WHITESPACE) {
-                self.bump()
-            }
-        }
-    }
-
-    let mut tokens = lex(text);
-    tokens.reverse();
-    Parser { tokens, builder: GreenNodeBuilder::new(), errors: Vec::new() }.parse()
+    Parser::new(text).parse()
 }
 
-/// To work with the parse results we need a view into the
-/// green tree - the Syntax tree.
-/// It is also immutable, like a GreenNode,
-/// but it contains parent pointers, offsets, and
-/// has identity semantics.
+/// A hand-written parser that uses the Logos lexer
+/// to tokenize the source, then constructs
+/// a Rowan green tree from them.
+struct Parser<'p> {
+    skip_whitespace: bool,
+    current_token: Option<SyntaxKind>,
+    // These tokens are not consumed on errors.
+    //
+    // The syntax error is still reported,
+    // but the the surrounding context can still
+    // be parsed.
+    error_whitelist: u16,
+    /// lexer for parse string
+    lexer: Lexer<'p, SyntaxKind>,
+    /// the in-progress tree.
+    builder: GreenNodeBuilder<'p>,
+    /// the list of syntax errors we've accumulated
+    /// so far.
+    errors: Vec<Error>,
+}
 
-type SyntaxNode = rowan::SyntaxNode<Lang>;
-#[allow(unused)]
-type SyntaxToken = rowan::SyntaxToken<Lang>;
-#[allow(unused)]
-type SyntaxElement = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+/// This is just a convenience type during parsing.
+/// It allows using "?", making the code cleaner.
+type ParserResult<T> = Result<T, ()>;
+
+impl<'p> Parser<'p> {
+    fn new(source: &'p str) -> Self {
+        Parser {
+            current_token: None,
+            skip_whitespace: true,
+            error_whitelist: 0,
+            lexer: SyntaxKind::lexer(source),
+            builder: Default::default(),
+            errors: Default::default(),
+        }
+    }
+    fn parse(mut self) -> Parse {
+        let _ = with_node!(self.builder, ROOT, self.parse_root());
+
+        Parse {
+            green_node: self.builder.finish(),
+            errors: self.errors,
+        }
+    }
+    fn error(&mut self, message: &str) -> ParserResult<()> {
+        let span = self.lexer.span();
+        self.add_error(&Error {
+            range: TextRange::new(
+                TextSize::from(span.start as u32),
+                TextSize::from(span.end as u32),
+            ),
+            message: message.into(),
+        });
+        if let Some(t) = self.current_token {
+            if !self.whitelisted(t) {
+                self.token_as(ERROR).ok();
+            }
+        }
+        Err(())
+    }
+
+    // report error without consuming the current the token
+    fn report_error(&mut self, message: &str) -> ParserResult<()> {
+        let span = self.lexer.span();
+        self.add_error(&Error {
+            range: TextRange::new(
+                TextSize::from(span.start as u32),
+                TextSize::from(span.end as u32),
+            ),
+            message: message.into(),
+        });
+        Err(())
+    }
+
+    // add error to errors
+    fn add_error(&mut self, e: &Error) {
+        if let Some(last_err) = self.errors.last_mut() {
+            if last_err == e {
+                return;
+            }
+        }
+
+        self.errors.push(e.clone());
+    }
+
+    #[inline]
+    fn whitelist_token(&mut self, token: SyntaxKind) {
+        self.error_whitelist |= token as u16;
+    }
+
+    #[inline]
+    fn blacklist_token(&mut self, token: SyntaxKind) {
+        self.error_whitelist &= !(token as u16);
+    }
+
+    #[inline]
+    fn whitelisted(&self, token: SyntaxKind) -> bool {
+        self.error_whitelist & token as u16 != 0
+    }
+
+    fn insert_token(&mut self, kind: SyntaxKind, s: SmolStr) {
+        self.builder.token(kind.into(), s)
+    }
+
+    fn must_token_or(&mut self, kind: SyntaxKind, message: &str) -> ParserResult<()> {
+        match self.get_token() {
+            Ok(t) => {
+                if kind == t {
+                    self.token()
+                } else {
+                    self.error(message)
+                }
+            }
+            Err(_) => {
+                self.add_error(&Error {
+                    range: TextRange::new(
+                        self.lexer.span().start.try_into().unwrap(),
+                        self.lexer.span().end.try_into().unwrap(),
+                    ),
+                    message: "unexpected EOF".into(),
+                });
+                Err(())
+            }
+        }
+    }
+
+    fn token(&mut self) -> ParserResult<()> {
+        match self.get_token() {
+            Err(_) => Err(()),
+            Ok(token) => self.token_as(token),
+        }
+    }
+
+    fn token_as(&mut self, kind: SyntaxKind) -> ParserResult<()> {
+        match self.get_token() {
+            Err(_) => return Err(()),
+            Ok(_) => {
+                self.builder.token(kind.into(), self.lexer.slice().into());
+            }
+        }
+
+        self.step();
+        Ok(())
+    }
+    fn step(&mut self) {
+        self.current_token = None;
+        while let Some(token) = self.lexer.next() {
+            match token {
+                COMMENT => {
+                    match allowed_chars::comment(self.lexer.slice()) {
+                        Ok(_) => {}
+                        Err(err_indices) => {
+                            for e in err_indices {
+                                self.add_error(&Error {
+                                    range: TextRange::new(
+                                        (self.lexer.span().start + e).try_into().unwrap(),
+                                        (self.lexer.span().start + e).try_into().unwrap(),
+                                    ),
+                                    message: "invalid character in comment".into(),
+                                });
+                            }
+                        }
+                    };
+
+                    self.insert_token(token, self.lexer.slice().into());
+                }
+                WHITESPACE => {
+                    if self.skip_whitespace {
+                        self.insert_token(token, self.lexer.slice().into());
+                    } else {
+                        self.current_token = Some(token);
+                        break;
+                    }
+                }
+                ERROR => {
+                    self.insert_token(token, self.lexer.slice().into());
+                    let span = self.lexer.span();
+                    self.add_error(&Error {
+                        range: TextRange::new(
+                            span.start.try_into().unwrap(),
+                            span.end.try_into().unwrap(),
+                        ),
+                        message: "unexpected token".into(),
+                    })
+                }
+                _ => {
+                    self.current_token = Some(token);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn get_token(&mut self) -> ParserResult<SyntaxKind> {
+        if self.current_token.is_none() {
+            self.step();
+        }
+
+        self.current_token.ok_or(())
+    }
+    // =============================================================================================
+    // Let' parse
+    fn parse_root(&mut self) -> ParserResult<()> {
+        // We want to make sure that an entry spans the
+        // entire line, so we start/close its node manually.
+        // let mut entry_started = false;
+
+        while let Ok(token) = self.get_token() {
+            match token {
+                NEWLINE => {
+                    // dispose newline token
+                    let _ = self.token();
+                }
+                _ => {
+                    let _ = whitelisted!(self, NEWLINE, !with_node!(self.builder, SENTENCE, self.parse_sentence()));
+                }
+            }
+        }
+        if entry_started {
+            self.builder.finish_node();
+        }
+        Ok(())
+    }
+    fn parse_sentence(&mut self) -> ParserResult<()> {
+        self.must_token_or(BRACE_START, r#"expected sentence starts with "{""#)?;
+        // count if sentence is finished with brace or not.
+        let mut brace_count= 1;
+        while brace_count >= 0 {
+            let t = match self.get_token() {
+                Ok(token) => token,
+                Err(_) => {
+                    if brace_count == 0{
+                        return Ok(());
+                    }
+                    return self.error("unexpected end of input");
+                }
+            };
+            match t {
+                BRACE_END =>{
+                    if !finish_sentence {
+                        self.token()?;
+                        finish_sentence = true;
+                    } else {
+                        return self.error(r#"unexpected "}""#);
+                    }
+                }
+                COMMA => {
+                    if after_period {
+                        return self.error(r#"unexpected ".""#);
+                    } else {
+                        self.token()?;
+                        after_period = true;
+                    }
+                }
+                _ => {
+                    if after_period {
+                        match self.parse_ident() {
+                            Ok(_) => {}
+                            Err(_) => return self.error("expected identifier"),
+                        }
+                        after_period = false;
+                    } else {
+                        break;
+                    }
+                }
+            };
+        }
+
+        Ok(())
+    }
+}
 
 impl Parse {
     fn syntax(&self) -> SyntaxNode {
         SyntaxNode::new_root(self.green_node.clone())
     }
-}
-
-/// Let's check that the parser works as expected
-#[test]
-fn test_parser() {
-    let text = "(+ (* 15 2) 62)";
-    let node = parse(text).syntax();
-    assert_eq!(
-        format!("{:?}", node),
-        "ROOT@0..15", // root node, spanning 15 bytes
-    );
-    assert_eq!(node.children().count(), 1);
-    let list = node.children().next().unwrap();
-    let children = list
-        .children_with_tokens()
-        .map(|child| format!("{:?}@{:?}", child.kind(), child.text_range()))
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        children,
-        vec![
-            "L_PAREN@0..1".to_string(),
-            "ATOM@1..2".to_string(),
-            "WHITESPACE@2..3".to_string(), // note, explicit whitespace!
-            "LIST@3..11".to_string(),
-            "WHITESPACE@11..12".to_string(),
-            "ATOM@12..14".to_string(),
-            "R_PAREN@14..15".to_string(),
-        ]
-    );
-}
-
-/// So far, we've been working with a homogeneous untyped tree.
-/// It's nice to provide generic tree operations, like traversals,
-/// but it's a bad fit for semantic analysis.
-/// This crate itself does not provide AST facilities directly,
-/// but it is possible to layer AST on top of `SyntaxNode` API.
-/// Let's write a function to evaluate S-expression.
-///
-/// For that, let's define AST nodes.
-/// It'll be quite a bunch of repetitive code, so we'll use a macro.
-///
-/// For a real language, you'd want to generate an AST. I find a
-/// combination of `serde`, `ron` and `tera` crates invaluable for that!
-macro_rules! ast_node {
-    ($ast:ident, $kind:ident) => {
-        #[derive(PartialEq, Eq, Hash)]
-        #[repr(transparent)]
-        pub struct $ast(SyntaxNode);
-        impl $ast {
-            #[allow(unused)]
-            pub fn cast(node: SyntaxNode) -> Option<Self> {
-                if node.kind() == $kind {
-                    Some(Self(node))
-                } else {
-                    None
-                }
-            }
-        }
-    };
-}
-
-ast_node!(Root, ROOT);
-ast_node!(Atom, ATOM);
-ast_node!(List, LIST);
-
-// Sexp is slightly different, so let's do it by hand.
-#[derive(PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct Sexp(SyntaxNode);
-
-enum SexpKind {
-    Atom(Atom),
-    List(List),
-}
-
-impl Sexp {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        if Atom::cast(node.clone()).is_some() || List::cast(node.clone()).is_some() {
-            Some(Sexp(node))
-        } else {
-            None
-        }
-    }
-
-    fn kind(&self) -> SexpKind {
-        Atom::cast(self.0.clone())
-            .map(SexpKind::Atom)
-            .or_else(|| List::cast(self.0.clone()).map(SexpKind::List))
-            .unwrap()
-    }
-}
-
-// Let's enhance AST nodes with ancillary functions and
-// eval.
-impl Root {
-    pub fn sexps(&self) -> impl Iterator<Item = Sexp> + '_ {
-        self.0.children().filter_map(Sexp::cast)
-    }
-}
-
-enum Op {
-    Add,
-    Sub,
-    Div,
-    Mul,
-}
-
-impl Atom {
-    fn eval(&self) -> Option<i64> {
-        self.text().parse().ok()
-    }
-    fn as_op(&self) -> Option<Op> {
-        let op = match self.text().as_str() {
-            "+" => Op::Add,
-            "-" => Op::Sub,
-            "*" => Op::Mul,
-            "/" => Op::Div,
-            _ => return None,
-        };
-        Some(op)
-    }
-    fn text(&self) -> &SmolStr {
-        match &self.0.green().children().next() {
-            Some(rowan::NodeOrToken::Token(token)) => token.text(),
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl List {
-    fn sexps(&self) -> impl Iterator<Item = Sexp> + '_ {
-        self.0.children().filter_map(Sexp::cast)
-    }
-    fn eval(&self) -> Option<i64> {
-        let op = match self.sexps().nth(0)?.kind() {
-            SexpKind::Atom(atom) => atom.as_op()?,
-            _ => return None,
-        };
-        let arg1 = self.sexps().nth(1)?.eval()?;
-        let arg2 = self.sexps().nth(2)?.eval()?;
-        let res = match op {
-            Op::Add => arg1 + arg2,
-            Op::Sub => arg1 - arg2,
-            Op::Mul => arg1 * arg2,
-            Op::Div if arg2 == 0 => return None,
-            Op::Div => arg1 / arg2,
-        };
-        Some(res)
-    }
-}
-
-impl Sexp {
-    pub fn eval(&self) -> Option<i64> {
-        match self.kind() {
-            SexpKind::Atom(atom) => atom.eval(),
-            SexpKind::List(list) => list.eval(),
-        }
-    }
-}
-
-impl Parse {
     pub fn root(&self) -> Root {
         Root::cast(self.syntax()).unwrap()
     }
@@ -414,4 +374,31 @@ fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
             Some((kind, s))
         })
         .collect()
+}
+
+/// The parse results are stored as a "green tree".
+/// We'll discuss working with the results later
+/// The final results of a parsing.
+/// It contains the green tree, and
+/// the errors that occurred during parsing.
+#[derive(Debug, Clone)]
+pub struct Parse {
+    green_node: GreenNode,
+    #[allow(unused)]
+    errors: Vec<Error>,
+}
+
+impl Parse {
+    /// Turn the parse into a syntax node.
+    pub fn into_syntax(self) -> SyntaxNode {
+        SyntaxNode::new_root(self.green_node)
+    }
+
+    /// Turn the parse into a DOM tree.
+    ///
+    /// Any semantic errors that occur will be collected
+    /// in the returned DOM node.
+    pub fn into_dom(self) -> dom::RootNode {
+        dom::RootNode::cast(rowan::NodeOrToken::Node(self.into_syntax())).unwrap()
+    }
 }
