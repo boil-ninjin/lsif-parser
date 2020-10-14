@@ -21,7 +21,7 @@ use rowan::SmolStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(non_camel_case_types)]
 #[repr(u16)]
-enum SyntaxKind {
+pub enum SyntaxKind {
     L_PAREN = 0, // '('
     R_PAREN,     // ')'
     WORD,        // '+', '15'
@@ -50,7 +50,7 @@ impl From<SyntaxKind> for rowan::SyntaxKind {
 /// these two SyntaxKind types, allowing for a nicer SyntaxNode API where
 /// "kinds" are values from our `enum SyntaxKind`, instead of plain u16 values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Lang {}
+pub enum Lang {}
 impl rowan::Language for Lang {
     type Kind = SyntaxKind;
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
@@ -73,7 +73,7 @@ use rowan::GreenNodeBuilder;
 
 /// The parse results are stored as a "green tree".
 /// We'll discuss working with the results later
-struct Parse {
+pub struct Parse {
     green_node: GreenNode,
     #[allow(unused)]
     errors: Vec<String>,
@@ -83,7 +83,7 @@ struct Parse {
 /// Note that `parse` does not return a `Result`:
 /// by design, syntax tree can be built even for
 /// completely invalid source code.
-fn parse(text: &str) -> Parse {
+pub fn parse(text: &str) -> Parse {
     struct Parser {
         /// input tokens, including whitespace,
         /// in *reverse* order.
@@ -96,7 +96,7 @@ fn parse(text: &str) -> Parse {
     }
 
     /// The outcome of parsing a single S-expression
-    enum SexpRes {
+    pub enum SexpRes {
         /// An S-expression (i.e. an atom, or a list) was successfully parsed
         Ok,
         /// Nothing was parsed, as no significant tokens remained
@@ -258,10 +258,10 @@ macro_rules! ast_node {
     ($ast:ident, $kind:ident) => {
         #[derive(PartialEq, Eq, Hash)]
         #[repr(transparent)]
-        struct $ast(SyntaxNode);
+        pub struct $ast(SyntaxNode);
         impl $ast {
             #[allow(unused)]
-            fn cast(node: SyntaxNode) -> Option<Self> {
+            pub fn cast(node: SyntaxNode) -> Option<Self> {
                 if node.kind() == $kind {
                     Some(Self(node))
                 } else {
@@ -279,7 +279,7 @@ ast_node!(List, LIST);
 // Sexp is slightly different, so let's do it by hand.
 #[derive(PartialEq, Eq, Hash)]
 #[repr(transparent)]
-struct Sexp(SyntaxNode);
+pub struct Sexp(SyntaxNode);
 
 enum SexpKind {
     Atom(Atom),
@@ -306,7 +306,7 @@ impl Sexp {
 // Let's enhance AST nodes with ancillary functions and
 // eval.
 impl Root {
-    fn sexps(&self) -> impl Iterator<Item = Sexp> + '_ {
+    pub fn sexps(&self) -> impl Iterator<Item = Sexp> + '_ {
         self.0.children().filter_map(Sexp::cast)
     }
 }
@@ -363,7 +363,7 @@ impl List {
 }
 
 impl Sexp {
-    fn eval(&self) -> Option<i64> {
+    pub fn eval(&self) -> Option<i64> {
         match self.kind() {
             SexpKind::Atom(atom) => atom.eval(),
             SexpKind::List(list) => list.eval(),
@@ -372,24 +372,9 @@ impl Sexp {
 }
 
 impl Parse {
-    fn root(&self) -> Root {
+    pub fn root(&self) -> Root {
         Root::cast(self.syntax()).unwrap()
     }
-}
-
-/// Let's test the eval!
-fn main() {
-    let sexps = "
-92
-(+ 62 30)
-(/ 92 0)
-nan
-(+ (* 15 2) 62)
-";
-    let root = parse(sexps).root();
-    let res = root.sexps().map(|it| it.eval()).collect::<Vec<_>>();
-    eprintln!("{:?}", res);
-    assert_eq!(res, vec![Some(92), Some(92), None, None, Some(92),])
 }
 
 /// Split the input string into a flat list of tokens
