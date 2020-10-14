@@ -334,6 +334,14 @@ impl<'p> Parser<'p> {
 
         Ok(())
     }
+
+    fn parse_key(&mut self) -> ParserResult<()> {
+        Ok(())
+    }
+
+    fn parse_value(&mut self) -> ParserResult<()> {
+        Ok(())
+    }
 }
 
 /// The parse results are stored as a "green tree".
