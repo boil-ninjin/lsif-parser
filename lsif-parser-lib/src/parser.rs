@@ -1,38 +1,88 @@
+//! In this tutorial, we will write parser
+//! and evaluator of arithmetic S-expressions,
+//! which look like this:
+//! ```
+//! (+ (* 15 2) 62)
+//! ```
+//!
+//! It's suggested to read the conceptual overview of the design
+//! alongside this tutorial:
+//! https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/syntax.md
 
+/// Currently, rowan doesn't have a hook to add your own interner,
+/// but `SmolStr` should be a "good enough" type for representing
+/// tokens.
+/// Additionally, rowan uses `TextSize` and `TextRange` types to
+/// represent utf8 offsets and ranges.
+use rowan::SmolStr;
+
+/// Let's start with defining all kinds of tokens and
+/// composite nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[allow(non_camel_case_types)]
+#[repr(u16)]
+enum SyntaxKind {
+    L_PAREN = 0, // '('
+    R_PAREN,     // ')'
+    WORD,        // '+', '15'
+    WHITESPACE,  // whitespaces is explicit
+    ERROR,       // as well as errors
+
+    // composite nodes
+    LIST, // `(+ 2 3)`
+    ATOM, // `+`, `15`, wraps a WORD token
+    ROOT, // top-level node: a list of s-expressions
+}
+use SyntaxKind::*;
+
+/// Some boilerplate is needed, as rowan settled on using its own
+/// `struct SyntaxKind(u16)` internally, instead of accepting the
+/// user's `enum SyntaxKind` as a type parameter.
+///
+/// First, to easily pass the enum variants into rowan via `.into()`:
+impl From<SyntaxKind> for rowan::SyntaxKind {
+    fn from(kind: SyntaxKind) -> Self {
+        Self(kind as u16)
+    }
+}
+
+/// Second, implementing the `Language` trait teaches rowan to convert between
+/// these two SyntaxKind types, allowing for a nicer SyntaxNode API where
+/// "kinds" are values from our `enum SyntaxKind`, instead of plain u16 values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Lang {}
+impl rowan::Language for Lang {
+    type Kind = SyntaxKind;
+    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
+        assert!(raw.0 <= ROOT as u16);
+        unsafe { std::mem::transmute::<u16, SyntaxKind>(raw.0) }
+    }
+    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
+        kind.into()
+    }
+}
 
 /// GreenNode is an immutable tree, which is cheap to change,
 /// but doesn't contain offsets and parent pointers.
+use rowan::GreenNode;
+
 /// You can construct GreenNodes by hand, but a builder
 /// is helpful for top-down parsers: it maintains a stack
 /// of currently in-progress nodes
-use rowan::{GreenNode, GreenNodeBuilder, SmolStr, TextRange, TextSize};
-use std::convert::TryInto;
-use lsif_parser::syntax::{SyntaxKind, SyntaxKind::*, SyntaxNode};
+use rowan::GreenNodeBuilder;
 
 /// The parse results are stored as a "green tree".
 /// We'll discuss working with the results later
-#[derive(Debug, Clone)]
 struct Parse {
     green_node: GreenNode,
     #[allow(unused)]
     errors: Vec<String>,
 }
 
-impl Parse {
-    /// Turn the parse into a syntax node.
-    pub fn into_syntax(self) -> SyntaxNode {
-        SyntaxNode::new_root(self.green_node)
-    }
-
-    /// Turn the parse into a DOM tree.
-    ///
-    /// Any semantic errors that occur will be collected
-    /// in the returned DOM node.
-    pub fn into_dom(self) -> dom::RootNode {
-        dom::RootNode::cast(rowan::NodeOrToken::Node(self.into_syntax())).unwrap()
-    }
-}
-
+/// Now, let's write a parser.
+/// Note that `parse` does not return a `Result`:
+/// by design, syntax tree can be built even for
+/// completely invalid source code.
 fn parse(text: &str) -> Parse {
     struct Parser {
         /// input tokens, including whitespace,
@@ -44,15 +94,17 @@ fn parse(text: &str) -> Parse {
         /// so far.
         errors: Vec<String>,
     }
+
     /// The outcome of parsing a single S-expression
     enum SexpRes {
         /// An S-expression (i.e. an atom, or a list) was successfully parsed
         Ok,
         /// Nothing was parsed, as no significant tokens remained
         Eof,
-        /// An unexpected ')', ']' ':' was found
-        Invalid
+        /// An unexpected ')' was found
+        RParen,
     }
+
     impl Parser {
         fn parse(mut self) -> Parse {
             // Make sure that the root node covers all source
@@ -61,9 +113,9 @@ fn parse(text: &str) -> Parse {
             loop {
                 match self.sexp() {
                     SexpRes::Eof => break,
-                    SexpRes::Invalid=> {
+                    SexpRes::RParen => {
                         self.builder.start_node(ERROR.into());
-                        self.errors.push("unmatched character".to_string());
+                        self.errors.push("unmatched `)`".to_string());
                         self.bump(); // be sure to chug along in case of error
                         self.builder.finish_node();
                     }
@@ -79,17 +131,17 @@ fn parse(text: &str) -> Parse {
             Parse { green_node: self.builder.finish(), errors: self.errors }
         }
         fn list(&mut self) {
-            assert_eq!(self.current(), Some(L_CURL));
+            assert_eq!(self.current(), Some(L_PAREN));
             // Start the list node
             self.builder.start_node(LIST.into());
-            self.bump(); // '{'
+            self.bump(); // '('
             loop {
                 match self.sexp() {
                     SexpRes::Eof => {
-                        self.errors.push("expected `}`".to_string());
+                        self.errors.push("expected `)`".to_string());
                         break;
                     }
-                    SexpRes::Invalid=> {
+                    SexpRes::RParen => {
                         self.bump();
                         break;
                     }
@@ -106,11 +158,11 @@ fn parse(text: &str) -> Parse {
             // or an eof.
             let t = match self.current() {
                 None => return SexpRes::Eof,
-                Some(R_CURL) => return SexpRes::Invalid,
+                Some(R_PAREN) => return SexpRes::RParen,
                 Some(t) => t,
             };
             match t {
-                L_CURL => self.list(),
+                L_PAREN => self.list(),
                 WORD => {
                     self.builder.start_node(ATOM.into());
                     self.bump();
@@ -136,6 +188,7 @@ fn parse(text: &str) -> Parse {
             }
         }
     }
+
     let mut tokens = lex(text);
     tokens.reverse();
     Parser { tokens, builder: GreenNodeBuilder::new(), errors: Vec::new() }.parse()
@@ -147,6 +200,12 @@ fn parse(text: &str) -> Parse {
 /// but it contains parent pointers, offsets, and
 /// has identity semantics.
 
+type SyntaxNode = rowan::SyntaxNode<Lang>;
+#[allow(unused)]
+type SyntaxToken = rowan::SyntaxToken<Lang>;
+#[allow(unused)]
+type SyntaxElement = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+
 impl Parse {
     fn syntax(&self) -> SyntaxNode {
         SyntaxNode::new_root(self.green_node.clone())
@@ -156,7 +215,7 @@ impl Parse {
 /// Let's check that the parser works as expected
 #[test]
 fn test_parser() {
-    let text = "{ id: 1, type: \"vertex\", label: \"document\", uri: \"file:///Users/dirkb/sample.ts\", languageId: \"typescript\" }";
+    let text = "(+ (* 15 2) 62)";
     let node = parse(text).syntax();
     assert_eq!(
         format!("{:?}", node),
@@ -172,13 +231,13 @@ fn test_parser() {
     assert_eq!(
         children,
         vec![
-            "L_CURL@0..1".to_string(),
+            "L_PAREN@0..1".to_string(),
             "ATOM@1..2".to_string(),
             "WHITESPACE@2..3".to_string(), // note, explicit whitespace!
             "LIST@3..11".to_string(),
             "WHITESPACE@11..12".to_string(),
             "ATOM@12..14".to_string(),
-            "R_CURL@14..15".to_string(),
+            "R_PAREN@14..15".to_string(),
         ]
     );
 }
@@ -334,15 +393,15 @@ nan
 }
 
 /// Split the input string into a flat list of tokens
-/// (such as L_CURL, WORD, and WHITESPACE)
+/// (such as L_PAREN, WORD, and WHITESPACE)
 fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
     fn tok(t: SyntaxKind) -> m_lexer::TokenKind {
         m_lexer::TokenKind(rowan::SyntaxKind::from(t).0)
     }
     fn kind(t: m_lexer::TokenKind) -> SyntaxKind {
         match t.0 {
-            0 => L_CURL,
-            1 => R_CURL,
+            0 => L_PAREN,
+            1 => R_PAREN,
             2 => WORD,
             3 => WHITESPACE,
             4 => ERROR,
@@ -353,8 +412,8 @@ fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
     let lexer = m_lexer::LexerBuilder::new()
         .error_token(tok(ERROR))
         .tokens(&[
-            (tok(L_CURL), r"\("),
-            (tok(R_CURL), r"\)"),
+            (tok(L_PAREN), r"\("),
+            (tok(R_PAREN), r"\)"),
             (tok(WORD), r"[^\s()]+"),
             (tok(WHITESPACE), r"\s+"),
         ])
