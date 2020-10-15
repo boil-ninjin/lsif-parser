@@ -100,6 +100,7 @@ impl<'p> Parser<'p> {
             errors: self.errors,
         }
     }
+
     fn error(&mut self, message: &str) -> ParserResult<()> {
         let span = self.lexer.span();
         self.add_error(&Error {
@@ -262,7 +263,7 @@ impl<'p> Parser<'p> {
     fn parse_root(&mut self) -> ParserResult<()> {
         // We want to make sure that an entry spans the
         // entire line, so we start/close its node manually.
-        // let mut entry_started = false;
+        let mut entry_started = false;
         while let Ok(token) = self.get_token() {
             match token {
                 NEWLINE => {
@@ -271,12 +272,17 @@ impl<'p> Parser<'p> {
                     continue;
                 }
                 _ => {
+                    if entry_started {
+                        self.builder.finish_node();
+                    }
                     // not wrap by whitelisted because newline in sentence is not allowed
                     let _ = with_node!(self.builder, SENTENCE, self.parse_sentence());
                 }
             }
         }
-        self.builder.finish_node();
+        if entry_started {
+            self.builder.finish_node();
+        }
         Ok(())
     }
     // parse sentence but need to count brace and comma to find invalid one.
