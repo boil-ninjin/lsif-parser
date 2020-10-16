@@ -54,7 +54,7 @@ pub enum SyntaxKind {
     INLINE,
     // e.g.: [0,2,4]
     LIST,
-    // one key-balue pair
+    // one key-value pair
     ENTRY,
     // one sentence
     SENTENCE,
