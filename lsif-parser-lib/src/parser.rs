@@ -263,52 +263,48 @@ impl<'p> Parser<'p> {
     fn parse_root(&mut self) -> ParserResult<()> {
         // We want to make sure that an entry spans the
         // entire line, so we start/close its node manually.
-        let mut entry_started = false;
         while let Ok(token) = self.get_token() {
             match token {
                 NEWLINE => {
-                    // dispose newline token
-                    let _ = self.token()?;
-                    continue;
+                    // dispose NEWLINE
+                    self.token()?;
                 }
                 _ => {
-                    if entry_started {
-                        self.builder.finish_node();
-                    }
                     // not wrap by whitelisted because newline in sentence is not allowed
-                    let _ = with_node!(self.builder, SENTENCE, self.parse_sentence());
+                    with_node!(self.builder,SENTENCE, self.parse_sentence());
                 }
             }
         }
-        if entry_started {
-            self.builder.finish_node();
-        }
+
         Ok(())
     }
     // parse sentence but need to count brace and comma to find invalid one.
     fn parse_sentence(&mut self) -> ParserResult<()> {
-        self.must_token_or(BRACE_START, r#"expected sentence starts with "{""#)?;
         // count if sentence is finished with brace or not.
-        let mut first = true;
         let mut comma_last = false;
+        self.must_token_or(BRACE_START, r#"expected "{""#)?;
+        let mut in_sentence = true;
 
         loop {
             let t = self.get_token()?;
             match t {
                 BRACE_END => {
-                    if first || comma_last {
-                        // it is still reported as a syntax error,
-                        // but we can still analyze it as if it was a valid
-                        // table.
-                        let _ = self.report_error("expected value, trailing comma is not allowed");
-                        let _ = self.report_error("avoid sentence to be empty");
-                    } else {
-                        comma_last = false;
-                        break self.token()?;
+                    if comma_last {
+                        let _ = self.report_error("sentence must not be end with comma.");
                     }
+                    in_sentence = false;
+                    comma_last = false;
+                    break self.token()?;
+                }
+                NEWLINE => {
+                    self.error("sentence should not be in multiple lines.");
+                    comma_last = false;
+                    continue;
+                    // dispose NEWLINE
+                    // let _ = self.token()?;
                 }
                 COMMA => {
-                    if first || comma_last {
+                    if comma_last {
                         let _ = self.error(r#"unexpected ",""#);
                     } else {
                         self.token()?;
@@ -316,20 +312,16 @@ impl<'p> Parser<'p> {
                     }
                 }
                 _ => {
-                    if !comma_last && !first {
-                        return self.error(r#"unexpected entry after another one"#);
-                    } else {
-                        match self.parse_entry() {
-                            Ok(_) => {}
-                            Err(_) => return self.error("expected entry"),
-                        }
-                        comma_last = true;
-                    }
+                    let _ = match self.parse_entry() {
+                        Ok(_) => {}
+                        Err(_) => return self.error("invalid entry")
+                    };
+                    // }
+                    comma_last = false;
                 }
             };
-            first = false;
         }
-
+        // finish node if sentence is successfully closed by brace.
         Ok(())
     }
 
@@ -342,10 +334,12 @@ impl<'p> Parser<'p> {
     }
 
     fn parse_key(&mut self) -> ParserResult<()> {
+        self.token()?;
         Ok(())
     }
 
     fn parse_value(&mut self) -> ParserResult<()> {
+        self.token()?;
         Ok(())
     }
 }
