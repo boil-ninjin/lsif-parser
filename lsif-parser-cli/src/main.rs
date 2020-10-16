@@ -10,7 +10,7 @@ fn main() {
     println!("{:?}", &syntax);
     // let children = &syntax
     let children = &syntax.first_child().unwrap()
-        // .next_sibling().unwrap()
+        .next_sibling().unwrap()
         .children_with_tokens()
         .map(|child| format!("{:?}@{:?}", child.kind(), child.text_range()))
         .collect::<Vec<_>>();
