@@ -40,8 +40,8 @@ use std::fs;
 
 #[test]
 fn test_real() {
-    let str = fs::read_to_string("../../samples/jsonRPC.lsif").unwrap();
+    let str = fs::read_to_string("../samples/jsonRPC.lsif").unwrap();
     let root = parser::parse(&str);
     let syntax = root.into_syntax();
-    println!("{:?}", syntax);
+    assert_eq!(format!("{:?}", syntax), "ROOT@0..5384658");
 }
