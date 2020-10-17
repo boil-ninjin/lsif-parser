@@ -24,4 +24,14 @@ fn main() {
         .map(|child| format!("{:?}@{:?}", child.kind(), child.text_range()))
         .collect::<Vec<_>>();
     println!("{:?}", grand_children_vec);
+    test_real();
+}
+
+use std::fs;
+
+fn test_real() {
+    let str = fs::read_to_string("samples/jsonRPC.lsif").unwrap();
+    let root = parser::parse(&str);
+    let syntax = root.into_syntax();
+    println!("{:?}", syntax);
 }

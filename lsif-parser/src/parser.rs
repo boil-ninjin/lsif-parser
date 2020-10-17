@@ -331,8 +331,53 @@ impl<'p> Parser<'p> {
     }
 
     fn parse_key(&mut self) -> ParserResult<()> {
-        self.token()?;
+        if self.parse_ident().is_err() {
+            return self.error("expected identifier");
+        }
         Ok(())
+    }
+    fn parse_ident(&mut self) -> ParserResult<()> {
+        let t = self.get_token()?;
+        match t {
+            IDENT => self.token(),
+            STRING => {
+                match allowed_chars::string(self.lexer.slice()) {
+                    Ok(_) => {}
+                    Err(err_indices) => {
+                        for e in err_indices {
+                            self.add_error(&Error {
+                                range: TextRange::new(
+                                    (self.lexer.span().start + e).try_into().unwrap(),
+                                    (self.lexer.span().start + e).try_into().unwrap(),
+                                ),
+                                message: "invalid character in string".into(),
+                            });
+                        }
+                    }
+                };
+
+                match check_escape(self.lexer.slice()) {
+                    Ok(_) => self.token_as(IDENT),
+                    Err(err_indices) => {
+                        for e in err_indices {
+                            self.add_error(&Error {
+                                range: TextRange::new(
+                                    (self.lexer.span().start + e).try_into().unwrap(),
+                                    (self.lexer.span().start + e).try_into().unwrap(),
+                                ),
+                                message: "invalid escape sequence".into(),
+                            });
+                        }
+
+                        // We proceed normally even if
+                        // the string contains invalid escapes.
+                        // It shouldn't affect the rest of the parsing.
+                        self.token_as(IDENT)
+                    }
+                }
+            }
+            _ => self.error("expected identifier"),
+        }
     }
 
     fn parse_value(&mut self) -> ParserResult<()> {
@@ -379,7 +424,7 @@ impl<'p> Parser<'p> {
             _ => self.token()
         }
     }
-    fn parse_array(&mut self) -> ParserResult<()>{
+    fn parse_array(&mut self) -> ParserResult<()> {
         self.must_token_or(BRACKET_START, r#"expected "[""#)?;
 
         let mut first = true;
