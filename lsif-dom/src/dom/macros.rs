@@ -68,6 +68,7 @@ macro_rules! dom_display {
     };
 }
 
+/// Add trait [`crate::dom::Sealed`] to each Node
 macro_rules! dom_sealed {
     ($($id:ty),*) => {
         $(impl Sealed for $id {})*

@@ -49,15 +49,14 @@ pub enum SyntaxKind {
     // composite nodes
     KEY,
     VALUE,
-    VERTEX,
+    // one sentence
+    SENTENCE,
     // e.g.: {key:{ inline_key:"inline_value" }}
-    INLINE,
+    TABLE,
     // e.g.: [0,2,4]
     LIST,
     // one key-value pair
     ENTRY,
-    // one sentence
-    SENTENCE,
     // top-level node: a list of s-expressions
     ROOT,
 }

@@ -8,7 +8,7 @@
 /// Additionally, rowan uses `TextSize` and `TextRange` types to
 /// represent utf8 offsets and ranges.
 use crate::{
-    dom,
+    // dom,
     syntax::{SyntaxKind, SyntaxKind::*, SyntaxNode},
     util::{allowed_chars, check_escape},
 };
@@ -283,7 +283,6 @@ impl<'p> Parser<'p> {
         // count if sentence is finished with brace or not.
         let mut comma_last = false;
         self.must_token_or(BRACE_START, r#"expected "{""#)?;
-        let mut in_sentence = true;
 
         loop {
             let t = self.get_token()?;
@@ -292,8 +291,6 @@ impl<'p> Parser<'p> {
                     if comma_last {
                         let _ = self.report_error("sentence must not be end with comma.");
                     }
-                    in_sentence = false;
-                    comma_last = false;
                     break self.token()?;
                 }
                 NEWLINE => {
@@ -377,8 +374,104 @@ impl<'p> Parser<'p> {
                     }
                 }
             }
+            BRACKET_START => with_node!(self.builder, LIST, self.parse_array()),
+            BRACE_START => with_node!(self.builder, TABLE, self.parse_table()),
             _ => self.token()
         }
+    }
+    fn parse_array(&mut self) -> ParserResult<()>{
+        self.must_token_or(BRACKET_START, r#"expected "[""#)?;
+
+        let mut first = true;
+        let mut comma_last = false;
+        loop {
+            let t = self.get_token()?;
+
+            match t {
+                BRACKET_END => break self.token()?,
+                NEWLINE => {
+                    self.token()?;
+                    continue; // as if it wasn't there, so it doesn't count as a first token
+                }
+                COMMA => {
+                    if first || comma_last {
+                        let _ = self.error(r#"unexpected ",""#);
+                    }
+                    self.token()?;
+                    comma_last = true;
+                }
+                _ => {
+                    if !comma_last && !first {
+                        let _ = self.error(r#"expected ",""#);
+                    }
+                    let _ = whitelisted!(
+                        self,
+                        COMMA,
+                        with_node!(self.builder, VALUE, self.parse_value())
+                    );
+                    comma_last = false;
+                }
+            }
+
+            first = false;
+        }
+        Ok(())
+    }
+    fn parse_table(&mut self) -> ParserResult<()> {
+        self.must_token_or(BRACE_START, r#"expected "{""#)?;
+
+        let mut first = true;
+        let mut comma_last = false;
+        let mut was_newline = false;
+        loop {
+            let t = self.get_token()?;
+
+            match t {
+                BRACE_END => {
+                    if comma_last {
+                        // it is still reported as a syntax error,
+                        // but we can still analyze it as if it was a valid
+                        // table.
+                        let _ = self.report_error("expected value, trailing comma is not allowed");
+                    }
+                    break self.token()?;
+                }
+                NEWLINE => {
+                    // To avoid infinite loop in case
+                    // new lines are whitelisted.
+                    if was_newline {
+                        break;
+                    }
+
+                    let _ = self.error("newline is not allowed in an table");
+                    was_newline = true;
+                }
+                COMMA => {
+                    if first {
+                        let _ = self.error(r#"unexpected ",""#);
+                    } else {
+                        self.token()?;
+                    }
+                    comma_last = true;
+                    was_newline = false;
+                }
+                _ => {
+                    was_newline = false;
+                    if !comma_last && !first {
+                        let _ = self.error(r#"expected ",""#);
+                    }
+                    let _ = whitelisted!(
+                        self,
+                        COMMA,
+                        with_node!(self.builder, ENTRY, self.parse_entry())
+                    );
+                    comma_last = false;
+                }
+            }
+
+            first = false;
+        }
+        Ok(())
     }
 }
 
