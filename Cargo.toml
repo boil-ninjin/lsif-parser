@@ -1,3 +1,4 @@
 [workspace]
-members = ["lsif-parser-cli", "lsif-parser", "lsif-dom", "lsif-type"]
+members = ["lsif-parser", "lsif-type"]
+#members = ["lsif-parser-cli", "lsif-parser", "lsif-dom", "lsif-type"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
