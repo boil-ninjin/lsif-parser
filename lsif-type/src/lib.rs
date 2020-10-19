@@ -5,7 +5,7 @@ pub use lsp::{NumberOrString, Range, Position};
 
 pub type RangeId = lsp::NumberOrString;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum LocationOrRangeId {
     Location(lsp::Location),
     RangeId(RangeId),
@@ -17,19 +17,19 @@ macro_rules! result_of {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct Entry {
     pub id: lsp::NumberOrString,
     data: Element,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum Element {
     Vertex(Vertex),
     Edge(Edge),
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum Vertex {
     /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#the-project-vertex
     Project(Project),
@@ -57,7 +57,7 @@ pub enum Vertex {
     ExternalImportResult,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum Edge {
     Contains(EdgeData),
     RefersTo(EdgeData),
@@ -76,38 +76,38 @@ pub enum Edge {
     Diagnostic(EdgeData),
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct EdgeData {
     in_v: lsp::NumberOrString,
     out_v: lsp::NumberOrString,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum DefinitionResultType {
     Scalar(LocationOrRangeId),
     Array(LocationOrRangeId),
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub enum Item {
     Definition(EdgeData),
     Reference(EdgeData),
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct Document {
     uri: lsp::Url,
     language_id: Language,
 }
 
 /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#result-set
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct ResultSet {
     key: Option<String>,
 }
 
 /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#the-project-vertex
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq)]
 pub struct Project {
     project_file: lsp::Url,
     language_id: Language,

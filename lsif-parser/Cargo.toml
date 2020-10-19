@@ -1,5 +1,5 @@
 [package]
-name = "lsif-parser-lib"
+name = "lsif-parser"
 version = "0.1.0"
 authors = ["kkiyama117 <k.kiyama117@gmail.com>"]
 edition = "2018"
