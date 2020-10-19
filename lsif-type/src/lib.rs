@@ -1,9 +1,29 @@
 extern crate lsp_types as lsp;
 
-// Use LSP Types
+// Use LSP Types ===================================================================================
 pub type Uri = lsp::Url;
 pub type LspRange = lsp::Range;
 pub type SymbolKind = lsp::SymbolKind;
+
+// macros ==========================================================================================
+
+macro_rules! result_of {
+    ($x: tt) => {
+        <lsp::lsp_request!($x) as lsp::request::Request>::Result
+    }
+}
+
+macro_rules! dom_display {
+    ($($ast:ident),*) => {
+        $(
+            impl core::fmt::Display for $ast {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                   self.syntax().fmt(f)
+                }
+            }
+        )*
+    };
+}
 
 // Data Structure types ============================================================================
 
@@ -14,16 +34,11 @@ pub struct Entry {
 
 #[derive(Debug, PartialEq)]
 pub enum Element {
-    Vertex(Vertex),
-    Edge(Edge),
+    Vertex(Box<Vertex>),
+    Edge(Box<Edge>),
 }
 
-macro_rules! result_of {
-    ($x: tt) => {
-        <lsp::lsp_request!($x) as lsp::request::Request>::Result
-    }
-}
-#[derive(Debugm PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Vertex {
     MetaData(MetaData),
     Event(Event),
@@ -54,11 +69,13 @@ pub enum Vertex {
     ImplementationResult(result_of!("textDocument/implementation")),
 }
 
+#[derive(Debug, PartialEq)]
 pub enum EventKind {
     Begin,
     End,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum EventScope {
     Group,
     Project,
@@ -89,7 +106,7 @@ pub enum Range {
 pub struct DeclarationRange {
     text: String,
     kind: SymbolKind,
-    deprecated: Option<boolean>,
+    deprecated: Option<bool>,
     full_range: LspRange,
     detail: Option<String>,
 }
@@ -98,15 +115,17 @@ pub struct DeclarationRange {
 pub struct DefinitionRange {
     text: String,
     kind: SymbolKind,
-    deprecated: Option<boolean>,
+    deprecated: Option<bool>,
     full_range: LspRange,
     detail: Option<String>,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct ReferenceRange {
     text: String,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct UnknownRange {
     text: String,
 }
@@ -136,8 +155,8 @@ pub struct Project {
 
 #[derive(Debug, PartialEq)]
 pub enum DefinitionResultType {
-    Scalar(LocationOrRangeId),
-    Array(LocationOrRangeId),
+    // Scalar(LocationOrRangeId),
+    // Array(LocationOrRangeId),
 }
 
 #[derive(Debug, PartialEq)]
