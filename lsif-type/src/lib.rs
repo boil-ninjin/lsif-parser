@@ -1,26 +1,15 @@
 extern crate lsp_types as lsp;
 
-pub use lsp::Url;
-pub use lsp::{NumberOrString, Range, Position};
+// Use LSP Types
+pub type Uri = lsp::Url;
+pub type LspRange = lsp::Range;
+pub type SymbolKind = lsp::SymbolKind;
 
-pub type RangeId = lsp::NumberOrString;
-
-#[derive(Debug, PartialEq)]
-pub enum LocationOrRangeId {
-    Location(lsp::Location),
-    RangeId(RangeId),
-}
-
-macro_rules! result_of {
-    ($x: tt) => {
-        <lsp::lsp_request!($x) as lsp::request::Request>::Result
-    }
-}
+// Data Structure types ============================================================================
 
 #[derive(Debug, PartialEq)]
 pub struct Entry {
-    pub id: lsp::NumberOrString,
-    data: Element,
+    pub id: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -29,33 +18,140 @@ pub enum Element {
     Edge(Edge),
 }
 
-#[derive(Debug, PartialEq)]
+macro_rules! result_of {
+    ($x: tt) => {
+        <lsp::lsp_request!($x) as lsp::request::Request>::Result
+    }
+}
+#[derive(Debugm PartialEq)]
 pub enum Vertex {
+    MetaData(MetaData),
+    Event(Event),
     /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#the-project-vertex
     Project(Project),
+    // Group,
+    Location(Location),
     Document(Document),
     /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#ranges
-    Range(lsp::Range),
+    Range(Range),
+    // Moniker,
+    // PackageInformation,
     /// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#result-set
     ResultSet(ResultSet),
-
-    // Method results
-    DefinitionResult { result: DefinitionResultType },
-    // TODO: Fix ones below to use the { result: LSIFType } format
-    HoverResult(result_of!("textDocument/hover")),
-    ReferenceResult(result_of!("textDocument/references")),
-    // Blocked on https://github.com/gluon-lang/languageserver-types/pull/86
-    // ImplementationResult(result_of!("textDocument/implementation")),
-    // Blocked on https://github.com/gluon-lang/languageserver-types/pull/86
-    // TypeDefinitionResult(result_of!("textDocument/typeDefinition")),
+    DocumentSymbolResult(result_of!("textDocument/documentSymbol")),
     FoldingRangeResult(result_of!("textDocument/foldingRange")),
     DocumentLinkResult(result_of!("textDocument/documentLink")),
-    DocumentSymbolResult(result_of!("textDocument/documentSymbol")),
-    // TODO (these below and more)
     DiagnosticResult,
-    ExportResult,
-    ExternalImportResult,
+    DeclarationResult,
+    // Method results
+    DefinitionResult { result: DefinitionResultType },
+    // Blocked on https://github.com/gluon-lang/languageserver-types/pull/86
+    TypeDefinitionResult(result_of!("textDocument/typeDefinition")),
+    HoverResult(result_of!("textDocument/hover")),
+    // TODO: Fix ones below to use the { result: LSIFType } format
+    ReferenceResult(result_of!("textDocument/references")),
+    // Blocked on https://github.com/gluon-lang/languageserver-types/pull/86
+    ImplementationResult(result_of!("textDocument/implementation")),
 }
+
+pub enum EventKind {
+    Begin,
+    End,
+}
+
+pub enum EventScope {
+    Group,
+    Project,
+    Document,
+    MonikerAttach,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Event {
+    scope: EventKind,
+    kind: EventKind,
+    data: Element,
+}
+
+/// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#resultset
+#[derive(Debug, PartialEq)]
+pub struct ResultSet {}
+
+#[derive(Debug, PartialEq)]
+pub enum Range {
+    Declaration(DeclarationRange),
+    Definition(DefinitionRange),
+    Reference(ReferenceRange),
+    Unknown(UnknownRange),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DeclarationRange {
+    text: String,
+    kind: SymbolKind,
+    deprecated: Option<boolean>,
+    full_range: LspRange,
+    detail: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DefinitionRange {
+    text: String,
+    kind: SymbolKind,
+    deprecated: Option<boolean>,
+    full_range: LspRange,
+    detail: Option<String>,
+}
+
+pub struct ReferenceRange {
+    text: String,
+}
+
+pub struct UnknownRange {
+    text: String,
+}
+
+pub type Location = LspRange;
+
+#[derive(Debug, PartialEq)]
+pub struct MetaData {
+    project_root: Uri,
+    position_encoding: String,
+    tool_info: Option<MetaDataToolInfo>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct MetaDataToolInfo {
+    name: String,
+    version: Option<String>,
+    args: Option<Vec<String>>,
+}
+
+/// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#the-project-vertex
+#[derive(Debug, PartialEq)]
+pub struct Project {
+    project_file: Uri,
+    language_id: Language,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DefinitionResultType {
+    Scalar(LocationOrRangeId),
+    Array(LocationOrRangeId),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Item {
+    Definition(EdgeData),
+    Reference(EdgeData),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Document {
+    uri: Uri,
+    language_id: Language,
+}
+
 
 #[derive(Debug, PartialEq)]
 pub enum Edge {
@@ -80,37 +176,6 @@ pub enum Edge {
 pub struct EdgeData {
     in_v: lsp::NumberOrString,
     out_v: lsp::NumberOrString,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum DefinitionResultType {
-    Scalar(LocationOrRangeId),
-    Array(LocationOrRangeId),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Item {
-    Definition(EdgeData),
-    Reference(EdgeData),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Document {
-    uri: lsp::Url,
-    language_id: Language,
-}
-
-/// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#result-set
-#[derive(Debug, PartialEq)]
-pub struct ResultSet {
-    key: Option<String>,
-}
-
-/// https://github.com/Microsoft/language-server-protocol/blob/master/indexFormat/specification.md#the-project-vertex
-#[derive(Debug, PartialEq)]
-pub struct Project {
-    project_file: lsp::Url,
-    language_id: Language,
 }
 
 /// https://github.com/Microsoft/language-server-protocol/issues/213
