@@ -1,4 +1,5 @@
-use crate::parser;
+use std::fs;
+use lsif_parser_lib::parser;
 
 #[test]
 fn test() {
@@ -33,4 +34,12 @@ fn test() {
             "BRACE_END@22..23"
         ]
     );
+}
+
+#[test]
+fn test_real() {
+    let str = fs::read_to_string("../samples/jsonRPC.lsif").unwrap();
+    let root = parser::parse(&str);
+    let syntax = root.into_syntax();
+    assert_eq!(format!("{:?}", syntax), "ROOT@0..5384658");
 }
